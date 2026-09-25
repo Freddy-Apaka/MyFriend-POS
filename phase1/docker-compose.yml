@@ -1,0 +1,35 @@
+# Local Supabase stack for development.
+#
+# This is a minimal reference file. For full local Supabase development,
+# prefer running `supabase start` via the Supabase CLI (see docs/LOCAL_SETUP.md),
+# which manages this stack automatically with the correct image versions.
+#
+# This file is kept as a fallback / reference for what runs locally.
+
+version: '3.8'
+
+services:
+  db:
+    image: supabase/postgres:15.1.0.117
+    container_name: myfriend-pos-db
+    ports:
+      - '54322:5432'
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    volumes:
+      - supabase-db-data:/var/lib/postgresql/data
+
+  studio:
+    image: supabase/studio:latest
+    container_name: myfriend-pos-studio
+    ports:
+      - '54323:3000'
+    environment:
+      SUPABASE_URL: http://localhost:54321
+      STUDIO_PG_META_URL: http://meta:8080
+    depends_on:
+      - db
+
+volumes:
+  supabase-db-data:

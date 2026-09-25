@@ -1,0 +1,78 @@
+-- ============================================================================
+-- Row Level Security (RLS) — Reference Pattern
+-- ============================================================================
+-- This file is NOT run automatically. It documents the RLS pattern every
+-- tenant-scoped table must follow, per ADR-004 (Database Provider).
+--
+-- Copy this pattern into the real migration files you write during M2 when
+-- each table is actually created (Database Schema Specification v0.1).
+-- Do not run this file directly — it has no CREATE TABLE statements.
+--
+-- Reminder: RLS is defence-in-depth, NOT the primary tenant isolation
+-- mechanism. The application layer (request context middleware, built in
+-- M2 BE-003) is the primary enforcement. RLS catches what the application
+-- layer might miss due to a bug — it must never be the only safeguard.
+-- ============================================================================
+
+-- Every tenant-scoped table needs RLS enabled:
+-- ALTER TABLE <table_name> ENABLE ROW LEVEL SECURITY;
+
+-- Standard pattern: a table scoped to an organization checks that the
+-- requesting user's JWT claims include membership in that organization.
+-- This assumes a `org_memberships` table exists mapping auth.uid() to
+-- organization_id, created during M2 (Epic 04 — Identity).
+
+-- Example (do not run — illustrative only, table doesn't exist yet):
+--
+-- CREATE POLICY "org_members_can_select"
+--   ON orders
+--   FOR SELECT
+--   USING (
+--     organization_id IN (
+--       SELECT organization_id
+--       FROM org_memberships
+--       WHERE user_id = auth.uid()
+--     )
+--   );
+--
+-- CREATE POLICY "org_members_can_insert"
+--   ON orders
+--   FOR INSERT
+--   WITH CHECK (
+--     organization_id IN (
+--       SELECT organization_id
+--       FROM org_memberships
+--       WHERE user_id = auth.uid()
+--     )
+--   );
+
+-- Store-scoped tables follow the same pattern but check store_assignments
+-- instead of (or in addition to) org_memberships, depending on the table.
+
+-- Platform Admin tables (organizations, subscriptions, platform-level
+-- config) use a different check — membership in the `platform_admins`
+-- table, not org_memberships. Per ADR-007, platform admin access is never
+-- granted via organization role, only via explicit platform_admins entry.
+--
+-- CREATE POLICY "platform_admins_can_select"
+--   ON organizations
+--   FOR SELECT
+--   USING (
+--     EXISTS (
+--       SELECT 1 FROM platform_admins WHERE user_id = auth.uid()
+--     )
+--   );
+
+-- ============================================================================
+-- Checklist for every new tenant-scoped table created from M2 onward:
+-- ============================================================================
+-- [ ] RLS enabled on the table
+-- [ ] SELECT policy scoped to organization/store membership
+-- [ ] INSERT policy scoped to organization/store membership
+-- [ ] UPDATE policy scoped to organization/store membership
+-- [ ] DELETE policy scoped to organization/store membership (if deletes
+--     are allowed at all — remember the append-oriented financial model;
+--     most financial tables should have NO delete policy)
+-- [ ] Policy tested: a user from Org A cannot read/write Org B's rows
+-- [ ] Policy tested: a user with no organization membership gets zero rows
+-- ============================================================================

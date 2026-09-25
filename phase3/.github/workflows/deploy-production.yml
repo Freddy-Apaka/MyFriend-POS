@@ -1,0 +1,117 @@
+name: Deploy to Production
+
+# Runs on every push to main. Requires manual approval via the "production"
+# GitHub Environment before any deploy step executes — see docs/DEPLOYMENT.md
+# for how to configure that environment's protection rule.
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false # never cancel a production deploy mid-flight
+
+env:
+  NODE_VERSION: '20'
+  PNPM_VERSION: '8.15.0'
+
+jobs:
+  ci-checks:
+    name: Run CI checks before deploying
+    uses: ./.github/workflows/ci.yml
+
+  approval-gate:
+    name: Await manual approval
+    needs: ci-checks
+    runs-on: ubuntu-latest
+    environment:
+      name: production # configured with required reviewers in repo settings
+    steps:
+      - name: Approved
+        run: echo "Production deployment approved. Proceeding."
+
+  migrate-database:
+    name: Apply Supabase migrations (production)
+    needs: approval-gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Link to production project
+        run: supabase link --project-ref "$SUPABASE_PROD_PROJECT_ID"
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROD_PROJECT_ID: ${{ secrets.SUPABASE_PROD_PROJECT_ID }}
+
+      - name: Push migrations
+        run: supabase db push
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_PROD_DB_PASSWORD }}
+
+  deploy-backend:
+    name: Deploy API + Worker to Railway (production)
+    needs: migrate-database
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+
+      - name: Deploy API service
+        run: railway up --service api --environment production
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_API_TOKEN }}
+
+      - name: Deploy Worker service
+        run: railway up --service worker --environment production
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_API_TOKEN }}
+
+  deploy-web-apps:
+    name: Deploy Web Apps to Vercel (production)
+    needs: migrate-database
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        app: [pwa, web-business, web-platform, web-customer]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Vercel CLI
+        run: npm install -g vercel
+
+      - name: Deploy ${{ matrix.app }} to Vercel production
+        working-directory: apps/${{ matrix.app }}
+        run: |
+          vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
+          vercel build --prod --token="$VERCEL_TOKEN"
+          vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN"
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+
+  notify:
+    name: Notify deployment result
+    needs: [deploy-backend, deploy-web-apps]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report status
+        run: |
+          if [ "${{ needs.deploy-backend.result }}" = "success" ] && [ "${{ needs.deploy-web-apps.result }}" = "success" ]; then
+            echo "✅ Production deployment succeeded."
+          else
+            echo "❌ Production deployment failed. Check the job logs above."
+            exit 1
+          fi
